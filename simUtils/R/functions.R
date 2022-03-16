@@ -311,55 +311,6 @@ add_effect <- function(data,
 }
 
 
-#' Perform Hypothesis Test
-#'
-#' Split the dataset according to the specified period and perform a hypothesis 
-#' test.
-#' 
-#' `options$target` contains the name of the target variable in data.
-#' `config$first_period_end` is the last point of time that belongs to the first 
-#' study period.
-#' `config$time_variable` is the name of the variable containing timepoints in 
-#' data.
-#' `config$subject_variable` is the name of the variable that identifies 
-#' subjects in data.
-#' `config$group_variable` is the name of the group variable in data.
-#' `config$alpha` is the type-I error rate.
-#' Moreover, options and config must contain all entries required by 
-#' `discard_baseline`.
-#'
-#' @param data `data.table` with the simulation data
-#' @param period study period (either 1 or 2)
-#' @param options `list` with user-defined command line arguments
-#' @param config `list` with further arguments
-#'
-#' @return the test result (`TRUE` if H0 is rejected, `FALSE` otherwise)
-#' @export
-test_h0 <- function(data,
-                    period,
-                    options,
-                    config) {
-  data <- discard_baseline(data, options, config)  # discard baseline if needed
-  query <- data[[config$time_variable]] <= config$first_period_end
-  if (period == 1) {
-    data <- data[query]
-  } else {  # period == 2
-    data <- data[!query]
-  }
-  form <- as.formula(paste(
-    options$target,
-    paste(config$group_variable, config$time_variable, sep=" * "),
-    sep=" ~ "))
-  capture.output(
-    p_value <- nparLD::nparLD(
-      form,
-      data,
-      subject=config$subject_variable)$ANOVA.test[3,3]
-  )
-  return(p_value < config$alpha)
-}
-
-
 #' Simulation-based Computation of the Type-I Error
 #' 
 #' For a given number of repetitions, permute the target variable to establish 
@@ -375,7 +326,7 @@ test_h0 <- function(data,
 #' `config$alpha` is the expected type I error rate.
 #' 
 #' Moreover, `options` and `config` must contain all attributes required by 
-#' `test_h0`.
+#' `test_nparLD` and `discard_baseline`.
 #'
 #' @param data `data.table` with the simulation data
 #' @param options `list` with user-defined command line arguments
@@ -386,8 +337,8 @@ test_h0 <- function(data,
 compute_alpha_error <- function(data,
                                 options,
                                 config) {
+  data <- data.table::copy(data)  # deep copy to avoid in-place modifications
   target <- options$target
-  non_binarized <- data.table::copy(data[, ..target])  # save from binarization
   binarize_target(data, options, config)
   r <- config$repetitions
   results1 <- rep(-1, r) 
@@ -395,11 +346,11 @@ compute_alpha_error <- function(data,
   for (i in 1:r) {
     original <- data.table::copy(data[, ..target])  # save from passing by ref
     permute(data, target, config$blocklength)
-    results1[i] <- test_h0(data, 1, options, config)
-    results2[i] <- test_h0(data, 2, options, config)
+    testing_data <- discard_baseline(data, options, config)
+    results1[i] <- test_nparLD(testing_data, 1, options, config)
+    results2[i] <- test_nparLD(testing_data, 2, options, config)
     data[, c(target) := original[[target]]]  # restore original
   }
-  data[, c(target) := non_binarized[[target]]]  # restore after binarization
   l <- list(
     period_1=list(
       error=mean(results1, na.rm=TRUE),
@@ -433,7 +384,7 @@ compute_alpha_error <- function(data,
 #' `binarize_target`).
 #' 
 #' Moreover, `options` and `config` must contain all attributes required by 
-#' `add_effect` and `test_h0`.
+#' `add_effect`, `test_nparLD`, and `discard_baseline`.
 #'
 #' @param data `data.table` with the simulation data
 #' @param params named vector that maps parameter names to values
@@ -455,8 +406,9 @@ compute_power <- function(data,
     permute(data, target, config$blocklength)
     add_effect(data, params, options, config)
     binarize_target(data, options, config)
-    results1[i] <- test_h0(data, 1, options, config)
-    results2[i] <- test_h0(data, 2, options, config)
+    testing_data <- discard_baseline(data, options, config)
+    results1[i] <- test_nparLD(testing_data, 1, options, config)
+    results2[i] <- test_nparLD(testing_data, 2, options, config)
     data[, c(target) := original[[target]]]  # restore original
   }
   l <- list(

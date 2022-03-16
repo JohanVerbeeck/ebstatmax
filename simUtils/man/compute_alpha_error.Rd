@@ -31,5 +31,5 @@ one subject.
 \code{config$alpha} is the expected type I error rate.
 
 Moreover, \code{options} and \code{config} must contain all attributes required by
-\code{test_h0}.
+\code{test_nparLD} and \code{discard_baseline}.
 }
