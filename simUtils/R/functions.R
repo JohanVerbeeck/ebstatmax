@@ -80,7 +80,7 @@ generate_effect <- function(effect_type,
   } else {
     stop("invalid effect type")
   }
-  return(round(effect), 1)
+  return(round(effect, 1))
 }
 
 
