@@ -1,0 +1,317 @@
+#' Perform Hypothesis Test
+#'
+#' GPC tests assuming larger values are preferred
+#'
+#' @param data data.table with the simulation data
+#' @param target name of the target variable
+#' @param type of the GPC (univariate, (multivariate) prioritized, (multivariate) non-prioritized)
+#' @param matching 'matched' or 'unmatched' GPC
+#' @param alpha type-I error rate
+#' @param side 1 or 2 for one- or two-sided test
+#'
+#' @return the test result (TRUE if H0 is rejected, FALSE otherwise)
+test_h0 <- function(data,
+                    target,
+                    type,
+                    matching,
+                    alpha, 
+                    side) {
+  
+  #Define univariate and multivariate scoring functions
+  #Univariate score function for pairwise comparisons (here we assume larger values are preferred
+  Score_fct <- function(Value_i, Value_j) {
+    if (Value_i > Value_j) {
+      Score = 1
+    }
+    else if (Value_i == Value_j) {
+      Score = 0
+    }
+    else if (Value_i < Value_j) {
+      Score = -1
+    }  
+    return(Score)
+  }
+  
+  #Multivariate score function for pairwise comparisons (here we assume larger values are preferred
+  ScoreV <- function(Outcome, Trt) {
+    n = length(Trt)
+    Score = matrix(nrow = n,ncol = n)
+    for (i in 1:n) {
+      for (j in 1:n) {
+        if (Outcome[j] > Outcome[i]) {
+          Score[j,i] = -1
+        }
+        else if (Outcome[j] < Outcome[i]) {
+          Score[j,i] = 1
+        }
+        else {
+          Score[j,i] = 0
+        }
+      }
+    }
+    return(Score)
+  }
+  
+  
+  
+  if (type == "univariate") {
+    data_sum <- data %>% 
+      group_by(N, Id, Group) %>%
+      summarise(Sum=sum(target)) %>%
+      ungroup()
+    
+    if(matching == "matched") {
+      data_sum$Sum <- ifelse(
+        data_sum$Group == "P",
+        0 - data_sum$Sum,
+        data_sum$Sum
+      )
+      data_sum <- data_sum %>%
+        group_by(N, Id) %>%
+        summarise(SumTx=sum(Sum)) %>% 
+        ungroup()
+      data_sum$ScoreT <- ifelse(data_sum$SumTx < 0, 1, 0)
+      data_sum$ScoreC <- ifelse(data_sum$SumTx > 0, 1, 0)
+      
+      #Perform two-sided and one-sided test
+      data_sum$Z <- 
+        (data_sum$SumT - data_sum$SumC)/sqrt(data_sum$SumT + data_sum$SumC)
+      
+      prob_larger <- pnorm(as.numeric(data_sum$Z), lower.tail=F)
+      if(side == 1) {
+        p_value <- prob_larger
+      }
+      else if(side == 2) {
+        prob_smaller <- pnorm(as.numeric(data_sum$Z), lower.tail=T)
+        p_value <- ifelse(
+          as.numeric(data_sum$Z) > 0, 2*prob_larger, 2*prob_smaller) 
+      }
+    } 
+    
+    else if(matching == "unmatched") {
+      
+      #define number of subjects in each treatment arm
+      Id_v <- as.data.frame(filter(data_sum, Group == "V"))
+      nTest <- length(Id_v[, 2])
+      Id_p <- as.data.frame(filter(data_sum, Group == "P"))
+      nControl <- length(Id_p[, 2])
+      npatients <- nTest + nControl
+      
+      #perform pairwise comparisons
+      U_Gehan = matrix(NA, nrow = nTest, ncol = nControl)
+      
+      for (i in 1:nTest) {
+        for (j in 1:nControl) {
+          U = Score_fct(
+            data_sum$Sum[data_sum$Group == "V"][i],
+            data_sum$Sum[data_sum$Group == "P"][j])
+          U_Gehan[i,j] = U
+        }
+      }
+      
+      Gehan = mean(U_Gehan)
+      
+      #variance function
+      U_Gehan_v = matrix(NA, nrow=npatients, ncol=npatients)
+      
+      for (i in 1:npatients) {
+        for (j in 1:npatients) {
+          U_Gehan_v[i,j] = Score_fct(data_sum$Sum[i], data_sum$Sum[j])[1]
+        }
+      }
+      
+      Var_Gehan_P = sum(rowSums(U_Gehan_v)^2)/
+        (nTest*nControl*npatients*(npatients - 1))
+      
+      #Perform two-sided and one-sided test
+      
+      if(side == 1) {
+        p_value <- pnorm(-(Gehan/sqrt(Var_Gehan_P)))
+      }
+      else if(side == 2){
+        p_value <- 2*pnorm(-abs(Gehan/sqrt(Var_Gehan_P))) 
+      }
+    }
+  }
+  
+  else {
+    
+    sel_var <- c("Id", "Group", target)
+    T1_VAS <- select(filter(data, Time %in% c("t4", "t12")), all_of(sel_var))
+    T2_VAS <- select(filter(data, Time %in% c("t7", "t15")), all_of(sel_var))
+    T3_VAS <- select(filter(data, Time %in% c("t2", "t10")), all_of(sel_var))
+    T4_VAS <- select(filter(data, Time %in% c("t0", "t8")), all_of(sel_var))
+    
+    if (type == "prioritized") {
+      
+      if(matching == "matched") {
+        
+        Score <- function(time) {
+          test <- time
+          names(test)[3] <- "outcome"
+          test$outcome <- ifelse(
+            test$Group == "P", 0 - test$outcome, test$outcome)
+          test <- test %>% 
+            group_by(Id) %>% 
+            summarise(SumTx=sum(outcome), .groups = 'drop') %>%
+            ungroup()
+          test$ScoreT <- ifelse(test$SumTx < 0, 1, 0)
+          test$ScoreC <- ifelse(test$SumTx > 0, 1, 0)      
+          return(test[, -2])
+        }
+        
+        df_list <- list(
+          df1=Score(T1_VAS),
+          df2=Score(T2_VAS),
+          df3=Score(T3_VAS),
+          df4=Score(T4_VAS))
+        
+        p_list <- lapply(df_list, function(x) transform(x, Score=ScoreT + ScoreC))
+        for (i in names(p_list)) {
+          colnames(p_list[[i]]) <- c("Id", paste0(i, "T"), paste0(i, "C"), i)
+        }
+        pfin <- Reduce(
+          function(x, y) merge(x, y, by="Id"),
+          p_list,
+          accumulate=FALSE)
+        pfin$ScoreT <- ifelse(
+          pfin$df1 == 1,
+          pfin$df1T, 
+          ifelse(
+            pfin$df2 == 1,
+            pfin$df2T, 
+            ifelse(
+              pfin$df3 == 1,
+              pfin$df3T,
+              pfin$df4T
+            )
+          )
+        ) 
+        
+        pfin$ScoreC <- ifelse(
+          pfin$df1 == 1,
+          pfin$df1C, 
+          ifelse(
+            pfin$df2 == 1,
+            pfin$df2C, 
+            ifelse(
+              pfin$df3 == 1,
+              pfin$df3C,
+              pfin$df4C
+            )
+          )
+        )  
+        pfin$Score <- ifelse((pfin$ScoreT - pfin$ScoreC) > 0, 1, 0)
+        pSumC <- sum(pfin$Score == 0)
+        pSumT <- sum(pfin$Score == 1)
+        pZ <- (pSumT - pSumC)/sqrt(pSumT + pSumC)
+        
+        prob_larger <- pnorm(as.numeric(pZ), lower.tail=F)
+        if(side == 1) {
+          p_value  <- prob_larger
+        }
+        else if(side == 2){
+          prob_smaller <- pnorm(as.numeric(pZ), lower.tail=T)
+          p_value <- ifelse(as.numeric(pZ) > 0, 2*prob_larger, 2*prob_smaller) 
+        }
+      }
+      
+      else if(matching == "unmatched") {
+        
+        Id_v <- as.data.frame(filter(data, Group == "V"))
+        nTest <- length(unique(Id_v[["Id"]]))
+        Id_p <- as.data.frame(filter(data, Group == "P"))
+        nControl <- length(unique(Id_p[["Id"]]))
+        npatients <- nTest + nControl
+        
+        Outcome <- list(T1_VAS, T2_VAS, T3_VAS, T4_VAS)
+        db_trt <- filter(data, Time %in% c("t4", "t12"))
+        Trt <- ifelse(db_trt$Group == "V", 1, 0)
+        
+        list_D <- numeric()
+        listD_cumulative <- numeric()
+        list_V <- numeric()
+        listV_cumulative <- numeric()
+        Score_prev <- 0
+        
+        for (i in 1:length(Outcome)) {
+          Score_V <- ScoreV(unlist(Outcome[[i]]), Trt)
+          
+          Score_pV <- Score_V * (1 - abs(Score_prev))
+          Score_D <- Score_pV[which(Trt == 1), which(Trt == 0)]
+          Score_prev <- Score_prev + Score_pV
+          
+          list_D[i] <- mean(Score_D)
+          listD_cumulative[i] <- sum(list_D[1:i])
+          denominator <- length(Trt[Trt == 1])*
+            length(Trt[Trt == 0])*length(Trt)*((length(Trt)) - 1)
+          list_V[i] <- sum(rowSums(Score_pV)^2)/denominator
+          listV_cumulative[i] = sum(rowSums(Score_prev)^2)/denominator
+        }
+        
+        pNB <- listD_cumulative[length(Outcome)]  
+        pNB_var <- listV_cumulative[length(Outcome)]
+        
+        if(side == 1) {
+          p_value <- pnorm((-pNB/sqrt(pNB_var))
+        }
+        else if(side == 2) {
+          p_value <- 2*pnorm(-abs(pNB/sqrt(pNB_var))) 
+        }
+      }
+    }
+    
+    else if (type == "non-prioritized") {
+      
+      if(matching == "matched") {
+        stop("Cannot perform matched non-prrioritized GPC")
+      }
+      
+      else if(matching == "unmatched") {
+        
+        Id_v <- as.data.frame(filter(data, Group == "V"))
+        nTest <- length(unique(Id_v[["Id"]]))
+        Id_p <- as.data.frame(filter(data, Group == "P"))
+        nControl <- length(unique(Id_p[["Id"]]))
+        npatients <- nTest + nControl
+        
+        Outcome <- list(T1_VAS, T2_VAS, T3_VAS, T4_VAS)
+        db_trt <- filter(data, Time %in% c("t4", "t12"))
+        Trt <- ifelse(db_trt$Group == "V", 1, 0)
+        
+        list_npD <- numeric()
+        listnpD_cumulative <- numeric()
+        list_npV <- numeric()
+        listnpV_cumulative <- numeric()
+        Score_npprev <- 0
+        
+        for (i in 1:length(Outcome)) {
+          Score_V = ScoreV(unlist(Outcome[[i]]), Trt)
+          
+          Score_npD = Score_V[which(Trt == 1), which(Trt == 0)]
+          Score_npprev = Score_npprev + Score_V
+          
+          list_npD[i] = mean(Score_npD)
+          listnpD_cumulative[i] = sum(list_npD[1:i])
+          denominator <- length(Trt[Trt == 1])*
+            length(Trt[Trt == 0])*length(Trt)*((length(Trt)) - 1)
+          list_npV[i] = sum(rowSums(Score_V)^2)/denominator
+          listnpV_cumulative[i] = sum(rowSums(Score_npprev)^2)/denominator
+        }
+        npNB <- listnpD_cumulative[length(Outcome)]/length(Outcome)
+        npNB_var <- listnpV_cumulative[length(Outcome)]/length(Outcome)^2
+        
+        if (side == 1) {
+          p_value <- pnorm((-npNB/sqrt(npNB_var))
+        }
+        else if (side == 2){
+          p_value <- 2*pnorm(-abs(npNB/sqrt(npNB_var)))
+        }
+      }
+    }
+  }
+  return (p_value < alpha)
+}
+
+
+
