@@ -241,7 +241,7 @@ gpc <- function(data,
         
     data_m<- data[(duplicated(data[,c("Id","Time")], fromLast = FALSE) | duplicated(data[,c("Id","Time")], fromLast = TRUE)),]
     ID_b <- c(rep(unique(data_m$Id), each = 2))
-    Outcome_m <- split(select(data_m, SamplePain), data_m$Time)
+    Outcome_m <- split(select(data_m,  !!target), data_m$Time)
     db_trt <- filter(data_m, Time == repeated[1])
     Trt <- ifelse(db_trt$Group == "V", 1, 0)
     nTest <- length(Trt[Trt == 1])
